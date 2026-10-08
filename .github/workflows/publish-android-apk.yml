@@ -39,22 +39,28 @@ jobs:
         id: gradle
         run: |
           set -euo pipefail
-          if [[ -x "./gradlew" ]]; then
+          if [[ -f "./gradlew" ]]; then
+            chmod +x ./gradlew
+            echo "found=true" >> "$GITHUB_OUTPUT"
             echo "directory=." >> "$GITHUB_OUTPUT"
-          elif [[ -x "./android/gradlew" ]]; then
+          elif [[ -f "./android/gradlew" ]]; then
+            chmod +x ./android/gradlew
+            echo "found=true" >> "$GITHUB_OUTPUT"
             echo "directory=android" >> "$GITHUB_OUTPUT"
           else
-            echo "::error::No executable Gradle wrapper found at ./gradlew or ./android/gradlew."
-            exit 1
+            echo "::warning::No Gradle wrapper found at ./gradlew or ./android/gradlew. Skipping APK build and publish."
+            echo "found=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build release APK
+        if: steps.gradle.outputs.found == 'true'
         working-directory: ${{ steps.gradle.outputs.directory }}
         run: |
           set -euo pipefail
           ./gradlew --no-daemon assembleRelease
 
       - name: Resolve APK path
+        if: steps.gradle.outputs.found == 'true'
         id: apk
         run: |
           set -euo pipefail
@@ -67,12 +73,14 @@ jobs:
           echo "name=$(basename "$apk_path")" >> "$GITHUB_OUTPUT"
 
       - name: Upload APK artifact
+        if: steps.gradle.outputs.found == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: android-release-apk
           path: ${{ steps.apk.outputs.path }}
 
       - name: Publish APK to GitHub release
+        if: steps.gradle.outputs.found == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           INPUT_RELEASE_TAG: ${{ github.event.inputs.release_tag }}
