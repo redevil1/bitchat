@@ -1,0 +1,96 @@
+name: Publish Android APK
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build (tag, branch, or SHA)"
+        required: false
+      release_tag:
+        description: "Release tag to upload the APK to (defaults to the pushed tag)"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-publish:
+    name: Build and publish release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Locate Gradle wrapper
+        id: gradle
+        run: |
+          set -euo pipefail
+          if [[ -x "./gradlew" ]]; then
+            echo "directory=." >> "$GITHUB_OUTPUT"
+          elif [[ -x "./android/gradlew" ]]; then
+            echo "directory=android" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::No executable Gradle wrapper found at ./gradlew or ./android/gradlew."
+            exit 1
+          fi
+
+      - name: Build release APK
+        working-directory: ${{ steps.gradle.outputs.directory }}
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon assembleRelease
+
+      - name: Resolve APK path
+        id: apk
+        run: |
+          set -euo pipefail
+          apk_path="$(find "${{ steps.gradle.outputs.directory }}" -path "*/build/outputs/apk/release/*.apk" -type f | sort | head -n 1)"
+          if [[ -z "$apk_path" ]]; then
+            echo "::error::No release APK found under */build/outputs/apk/release."
+            exit 1
+          fi
+          echo "path=$apk_path" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$apk_path")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release-apk
+          path: ${{ steps.apk.outputs.path }}
+
+      - name: Publish APK to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_RELEASE_TAG: ${{ github.event.inputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          tag="$INPUT_RELEASE_TAG"
+          if [[ -z "$tag" && "${{ github.ref_type }}" == "tag" ]]; then
+            tag="${{ github.ref_name }}"
+          fi
+
+          if [[ -z "$tag" ]]; then
+            echo "No tag resolved; skipping release upload."
+            exit 0
+          fi
+
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --title "$tag" --notes "Automated Android APK release."
+          fi
+
+          gh release upload "$tag" "${{ steps.apk.outputs.path }}" --clobber
